@@ -12,6 +12,7 @@ import java.util.concurrent.CompletableFuture
 import java.util.concurrent.ExecutorService
 import java.util.concurrent.Executors
 import java.util.concurrent.ThreadFactory
+import java.util.concurrent.atomic.AtomicReference
 
 class CompletableFutureBasicsTest : FunSpec({
 
@@ -99,6 +100,36 @@ class CompletableFutureBasicsTest : FunSpec({
             worker.shutdown()
             continuation.shutdown()
         }
+    }
+
+    test("thenApply는 값을 변환해서 다음 값을 만든다.") {
+        val future = CompletableFuture
+            .supplyAsync { 10 }
+            .thenApply { it * 2 }
+
+        future.join() shouldBe 20
+    }
+
+    test("thenAccept는 값을 소비만 하고 반환값은 없다.") {
+        val result = AtomicReference<String>()
+
+        val future = CompletableFuture
+            .supplyAsync { "hello" }
+            .thenAccept { result.set(it) }
+
+        future.join()
+        result.get() shouldBe "hello"
+    }
+
+    test("thenRun은 이전 값과 무관하게 동작한다.") {
+        val result = AtomicReference<String>()
+
+        val future = CompletableFuture
+            .supplyAsync { "ignored" }
+            .thenRun { result.set("done") }
+
+        future.join()
+        result.get() shouldBe "done"
     }
 })
 
