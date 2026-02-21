@@ -49,6 +49,7 @@ class VirtualThreadBasicsTest : FunSpec({
         val thread = Thread.ofVirtual()
             .name("my-worker")
             .uncaughtExceptionHandler { _, e -> caughtException = e }
+            // uncaughtExceptionHandler : 스레드 내부에서 발생했지만 아무도 catch하지 않은 예외를 처리하는 핸들러
             .start {
                 threadName = Thread.currentThread().name
                 throw IllegalStateException("boom")
@@ -82,6 +83,7 @@ class VirtualThreadBasicsTest : FunSpec({
         val threadIds = ConcurrentHashMap.newKeySet<Long>()
 
         Executors.newVirtualThreadPerTaskExecutor().use { executor ->
+            // .use { } : Kotlin의 AutoCloseable 확장으로, 블록이 끝나면 executor.close() (= shutdown() + awaitTermination())를 자동 호출
             val futures = (1..100).map {
                 executor.submit {
                     threadIds.add(Thread.currentThread().threadId())
@@ -146,7 +148,7 @@ class VirtualThreadBasicsTest : FunSpec({
         var virtualId = 0L
         var platformId = 0L
 
-        val vThread = Thread.startVirtualThread { virtualId = Thread.currentThread().threadId() }
+        val vThread = Thread.ofVirtual().start { virtualId = Thread.currentThread().threadId() }
         val pThread = Thread.ofPlatform().start { platformId = Thread.currentThread().threadId() }
 
         vThread.join()

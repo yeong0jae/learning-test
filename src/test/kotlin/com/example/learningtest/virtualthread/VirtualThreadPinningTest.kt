@@ -1,139 +1,91 @@
 package com.example.learningtest.virtualthread
 
 import io.kotest.core.spec.style.FunSpec
-import io.kotest.matchers.longs.shouldBeLessThan
-import io.kotest.matchers.shouldBe
-import java.util.concurrent.atomic.AtomicInteger
+import java.util.concurrent.CountDownLatch
 import java.util.concurrent.locks.ReentrantLock
 import kotlin.system.measureTimeMillis
 
 /**
- * Pinning 현상을 확인한다.
+ * Pinning으로 인한 Starvation(기아) 현상을 확인한다.
  *
  * 핵심 포인트:
- * - 가상 스레드가 synchronized 블록 안에서 블로킹(sleep 등)하면
- *   캐리어 스레드에 "고정(pinned)"되어 반납되지 않는다.
- * - 이렇게 되면 가상 스레드의 장점(M:N 스케줄링)이 사라진다.
- * - 해결책: synchronized 대신 ReentrantLock을 사용하면 pinning이 발생하지 않는다.
- *
- * Java 24+에서는 synchronized pinning이 해결되었지만,
- * 개념적으로 이해하기 위해 테스트를 작성한다.
+ * - 캐리어 스레드(물리적 스레드)의 개수를 딱 2개로 제한한다.
+ * - 가상 스레드 2개가 락을 잡고 2초 동안 블로킹된다.
+ * - 이때 "락과 전혀 무관한 3번째 가상 스레드"가 실행될 때,
+ * 캐리어 스레드를 할당받지 못해 얼마나 굶주리는지(Starvation) 확인한다.
  */
-class VirtualThreadPinningTest : FunSpec({
+class VirtualThreadStarvationTest : FunSpec({
 
-    val lock = Any()
-    val reentrantLock = ReentrantLock()
+    // 가상 스레드 스케줄러가 초기화되기 전에 캐리어 스레드 수를 2개로 제한합니다.
+    // 만약 테스트 결과가 예상과 다르게 나온다면, IDE의 Run Configuration에서
+    // VM options에 직접 `-Djdk.virtualThreadScheduler.parallelism=2` 를 추가하고 실행해 주세요.
+    System.setProperty("jdk.virtualThreadScheduler.parallelism", "2")
 
-    test("synchronized 블록 안에서 sleep하면 pinning이 발생할 수 있다 (Java 24+ 에서는 해결됨)") {
-        // Java 24 이전: synchronized 안에서 sleep 시 캐리어 스레드가 고정됨
-        // Java 24+: synchronized에서도 pinning이 해결됨
-        // 하지만 개념을 이해하기 위해 두 방식을 비교한다
-        val taskCount = 200
-        val completed = AtomicInteger(0)
+    val syncLock1 = Any()
+    val syncLock2 = Any()
+    val reentrantLock1 = ReentrantLock()
+    val reentrantLock2 = ReentrantLock()
 
-        val elapsed = measureTimeMillis {
-            val threads = (1..taskCount).map {
-                Thread.startVirtualThread {
-                    synchronized(lock) {
-                        Thread.sleep(10) // 블로킹
-                    }
-                    completed.incrementAndGet()
+    test("1. [synchronized] Pinning 발생 시, 무관한 스레드까지 캐리어 스레드를 얻지 못해 멈춘다") {
+        val latch = CountDownLatch(2)
+
+        // 캐리어 스레드 2개를 모두 점유하고 2초 동안 놔주지 않는 가상 스레드 2개
+        val pinnedThreads = (1..2).map { i ->
+            Thread.startVirtualThread {
+                val lock = if (i == 1) syncLock1 else syncLock2
+                synchronized(lock) {
+                    latch.countDown()
+                    Thread.sleep(2000) // 2초간 캐리어 스레드에 강력 접착 (Pinning!)
                 }
             }
-            threads.forEach { it.join() }
         }
 
-        completed.get() shouldBe taskCount
-        println("[synchronized] ${taskCount}개 작업: ${elapsed}ms")
+        // 앞선 2개의 스레드가 락을 잡고 sleep에 들어갈 때까지 아주 잠깐 대기
+        latch.await()
+        Thread.sleep(50)
+
+        // 락과 완전히 무관한 3번째 가상 스레드 투입! (단순 100ms 대기 작업)
+        val elapsed = measureTimeMillis {
+            val innocentThread = Thread.startVirtualThread {
+                Thread.sleep(100)
+            }
+            innocentThread.join()
+        }
+
+        println("[synchronized] 무관한 3번째 작업이 걸린 시간: ${elapsed}ms")
+        // Java 21~23: 앞선 2초 작업이 끝날 때까지 캐리어 스레드가 없어서 약 1950ms 이상 걸림
+        // Java 24+ : Pinning이 해결되어 즉시 실행되므로 약 100ms 언저리 걸림
     }
 
-    test("ReentrantLock을 사용하면 pinning 없이 캐리어 스레드를 효율적으로 사용한다") {
-        val taskCount = 200
-        val completed = AtomicInteger(0)
+    test("2. [ReentrantLock] 언마운트 발생 시, 무관한 스레드는 즉시 빈 캐리어 스레드를 사용한다") {
+        val latch = CountDownLatch(2)
 
+        // 락을 잡고 쉬는 동안 캐리어 스레드를 깔끔하게 반납하는 가상 스레드 2개
+        val wellBehavedThreads = (1..2).map { i ->
+            Thread.startVirtualThread {
+                val lock = if (i == 1) reentrantLock1 else reentrantLock2
+                lock.lock()
+                try {
+                    latch.countDown()
+                    Thread.sleep(2000) // 힙 메모리로 언마운트! 캐리어 스레드 2개 해방!
+                } finally {
+                    lock.unlock()
+                }
+            }
+        }
+
+        latch.await()
+        Thread.sleep(50)
+
+        // 락과 완전히 무관한 3번째 가상 스레드 투입!
         val elapsed = measureTimeMillis {
-            val threads = (1..taskCount).map {
-                Thread.startVirtualThread {
-                    reentrantLock.lock()
-                    try {
-                        Thread.sleep(10) // 블로킹이지만 pinning 없음
-                    } finally {
-                        reentrantLock.unlock()
-                    }
-                    completed.incrementAndGet()
-                }
+            val innocentThread = Thread.startVirtualThread {
+                Thread.sleep(100)
             }
-            threads.forEach { it.join() }
+            innocentThread.join()
         }
 
-        completed.get() shouldBe taskCount
-        println("[ReentrantLock] ${taskCount}개 작업: ${elapsed}ms")
-    }
-
-    test("synchronized vs ReentrantLock: 동시 블로킹 작업에서의 성능 차이") {
-        // 락을 여러 개 만들어서 동시성을 높인 상황에서 비교
-        val taskCount = 500
-        val locksCount = 10
-        val syncLocks = Array(locksCount) { Any() }
-        val reentrantLocks = Array(locksCount) { ReentrantLock() }
-
-        val syncCounter = AtomicInteger(0)
-        val syncElapsed = measureTimeMillis {
-            val threads = (1..taskCount).map { i ->
-                Thread.startVirtualThread {
-                    synchronized(syncLocks[i % locksCount]) {
-                        Thread.sleep(10)
-                    }
-                    syncCounter.incrementAndGet()
-                }
-            }
-            threads.forEach { it.join() }
-        }
-
-        val reentrantCounter = AtomicInteger(0)
-        val reentrantElapsed = measureTimeMillis {
-            val threads = (1..taskCount).map { i ->
-                Thread.startVirtualThread {
-                    reentrantLocks[i % locksCount].lock()
-                    try {
-                        Thread.sleep(10)
-                    } finally {
-                        reentrantLocks[i % locksCount].unlock()
-                    }
-                    reentrantCounter.incrementAndGet()
-                }
-            }
-            threads.forEach { it.join() }
-        }
-
-        syncCounter.get() shouldBe taskCount
-        reentrantCounter.get() shouldBe taskCount
-
-        println("${taskCount}개 작업, ${locksCount}개 락:")
-        println("  synchronized:  ${syncElapsed}ms")
-        println("  ReentrantLock: ${reentrantElapsed}ms")
-        // Java 24+에서는 차이가 거의 없을 수 있다 (synchronized pinning 해결됨)
-        // Java 21-23에서는 ReentrantLock이 훨씬 빠를 것이다
-    }
-
-    test("pinning 없는 상황에서는 가상 스레드의 동시성이 최대로 발휘된다") {
-        // 락 없이 순수 블로킹만 하면 가상 스레드가 캐리어를 즉시 반납한다
-        val taskCount = 1_000
-        val completed = AtomicInteger(0)
-
-        val elapsed = measureTimeMillis {
-            val threads = (1..taskCount).map {
-                Thread.startVirtualThread {
-                    Thread.sleep(100) // 캐리어 스레드 반납
-                    completed.incrementAndGet()
-                }
-            }
-            threads.forEach { it.join() }
-        }
-
-        completed.get() shouldBe taskCount
-        // 1000개 × 100ms를 전부 동시 처리 → 약 100ms + 오버헤드
-        elapsed.shouldBeLessThan(3_000)
-        println("[no lock] ${taskCount}개 작업 (각 100ms sleep): ${elapsed}ms")
+        println("[ReentrantLock] 무관한 3번째 작업이 걸린 시간: ${elapsed}ms")
+        // 캐리어 스레드가 비어있으므로 앞선 2초 작업과 상관없이 즉시 실행됨 (약 100ms)
     }
 })

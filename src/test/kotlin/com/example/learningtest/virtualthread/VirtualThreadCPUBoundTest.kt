@@ -74,7 +74,7 @@ class VirtualThreadCPUBoundTest : FunSpec({
 
         println("CPU-bound 작업 (소수 계산, ${taskCount}개 분할)")
         println("  고정 스레드풀(${taskCount}): ${fixedElapsed}ms")
-        println("  가상 스레드:              ${virtualElapsed}ms")
+        println("  가상 스레드: ${virtualElapsed}ms")
         println("  결과: ${fixedResult.get()}개 소수 발견")
         // 두 방식의 시간이 비슷하거나, 가상 스레드가 약간 느릴 수 있다
     }

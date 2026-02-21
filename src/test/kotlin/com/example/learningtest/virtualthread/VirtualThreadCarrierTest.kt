@@ -38,7 +38,7 @@ class VirtualThreadCarrierTest : FunSpec({
         latch.await()
 
         // 1만 개의 가상 스레드가 Runtime.availableProcessors() 근처의 캐리어 스레드에서 실행됨
-        val availableProcessors = Runtime.getRuntime().availableProcessors()
+        val availableProcessors = Runtime.getRuntime().availableProcessors() // CPU 코어 수
         println("가상 스레드: ${virtualThreadCount}개")
         println("사용된 캐리어 스레드: ${carrierThreadNames.size}개")
         println("사용 가능한 프로세서: ${availableProcessors}개")
@@ -48,9 +48,6 @@ class VirtualThreadCarrierTest : FunSpec({
     }
 
     test("가상 스레드가 블로킹 후 재개되면 다른 캐리어 스레드에서 실행될 수 있다") {
-        val beforeCarrier = StringBuilder()
-        val afterCarrier = StringBuilder()
-
         // 여러 번 반복해서 캐리어 전환을 관찰
         var switchCount = 0
         val iterations = 100
